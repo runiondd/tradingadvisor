@@ -1,0 +1,30 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background-color: #050816;
+  color: #e5e7eb;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.5rem;
+}
+
+p {
+  margin: 0 0 0.5rem;
+}
+
