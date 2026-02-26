@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
 import { format } from "node:url";
+import { initStorage, closeStorage } from "./storage";
 
 const isDev = process.env.NODE_ENV === "development";
 
@@ -30,9 +31,13 @@ async function createMainWindow() {
   }
 }
 
-app.whenReady().then(createMainWindow);
+app.whenReady().then(() => {
+  initStorage({ userDataPath: app.getPath("userData") });
+  return createMainWindow();
+});
 
 app.on("window-all-closed", () => {
+  closeStorage();
   if (process.platform !== "darwin") {
     app.quit();
   }

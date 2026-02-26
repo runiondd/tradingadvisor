@@ -1,0 +1,55 @@
+# Mac Trading Assistant
+
+Electron + React desktop app for researching stocks, commodities, and options with macro, sentiment, and statistical analysis. Read-only: no order placement; supports CSV and future broker read-only integration.
+
+## Repo layout
+
+- **`apps/desktop/`** – Electron + TypeScript/React app (main process, renderer, domain logic, tests).
+
+## Branching and release strategy
+
+- **`main`** – Always deployable; tagged for each release (e.g. `v0.1.0`).
+- **`develop`** – Integration branch for the next release. Feature branches merge here.
+- **`feature/*`** – Short-lived branches for new work (e.g. `feature/options-optimizer`). Branch from `develop`, merge back into `develop`.
+- **`hotfix/*`** – Emergency fixes from `main`. Merge into both `main` and `develop`, then tag.
+
+### Release flow
+
+1. Create `release/vX.Y.Z` from `develop`.
+2. Stabilize on the release branch, then merge into `main`.
+3. Tag `vX.Y.Z` on `main`.
+4. Merge `main` back into `develop` if needed.
+
+### Rollback
+
+- Install a previous version from [GitHub Releases](https://github.com/runiondd/tradingadvisor/releases), or check out the desired tag (e.g. `git checkout v0.1.0`) and build locally.
+
+## Running the desktop app
+
+```bash
+cd apps/desktop
+npm install
+npm run dev
+```
+
+- **Dev:** Vite serves the React app at http://localhost:5173; Electron opens a window loading it. Run `npm run build:electron` first if the main process changes.
+- **Production build:** `npm run build` then `NODE_ENV=production npx electron .`
+
+## Tests and CI
+
+```bash
+cd apps/desktop
+npm test
+npm run lint
+npm run typecheck
+```
+
+GitHub Actions (`.github/workflows/desktop-ci.yml`) run on push/PR to `main` and `develop`: lint, typecheck, tests, and a macOS build. Generate a lockfile once with `npm install` in `apps/desktop` so `npm ci` works in CI.
+
+## Data providers and config
+
+- **Market:** Alpha Vantage (quotes, history). Set API key in onboarding or settings.
+- **Options:** Stub by default; add Polygon (or other) when ready.
+- **Macro:** FRED (optional). **News/sentiment:** NewsAPI + simple heuristic sentiment (optional).
+
+Secrets are intended to be stored via system keychain (e.g. `keytar`); API keys are not sent to the renderer.
