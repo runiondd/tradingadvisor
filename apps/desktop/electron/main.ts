@@ -1,7 +1,9 @@
 import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
 import { format } from "node:url";
+import "./ipcHandlers";
 import { initStorage, closeStorage } from "./storage";
+import { setRealtimeSender, close as closeRealtime } from "./realtimeSocket";
 
 const isDev = process.env.NODE_ENV === "development";
 
@@ -15,6 +17,14 @@ async function createMainWindow() {
       preload: join(__dirname, "preload.js")
     },
     title: "Mac Trading Assistant"
+  });
+
+  setRealtimeSender((data) => {
+    try {
+      win.webContents.send("realtime:data", data);
+    } catch {
+      // window may be destroyed
+    }
   });
 
   if (isDev) {
@@ -37,6 +47,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  closeRealtime();
   closeStorage();
   if (process.platform !== "darwin") {
     app.quit();

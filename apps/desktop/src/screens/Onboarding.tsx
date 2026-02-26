@@ -39,7 +39,12 @@ export const OnboardingScreen: React.FC<OnboardingProps> = ({ onComplete }) => {
           />
           <button
             type="button"
-            onClick={() => setStep(1)}
+            onClick={async () => {
+              if (typeof window.tradingApp?.invoke === "function" && apiKey.trim()) {
+                await window.tradingApp.invoke("config:set", { config: { market: { type: "alpha-vantage", apiKey: apiKey.trim() } } });
+              }
+              setStep(1);
+            }}
             style={{
               padding: "10px 20px",
               borderRadius: 6,
