@@ -1,0 +1,53 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: npm ci || npm install
+
+      - name: Lint
+        working-directory: apps/desktop
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: apps/desktop
+        run: npm test
+
+  build-macos:
+    runs-on: macos-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: npm ci || npm install
+
+      - name: Build
+        working-directory: apps/desktop
+        run: npm run build
