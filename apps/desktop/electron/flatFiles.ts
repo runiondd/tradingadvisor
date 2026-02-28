@@ -1,17 +1,18 @@
 /**
- * Download options flat files from Polygon/Massive S3 (files.polygon.io).
+ * Download options flat files from Massive S3 (files.massive.com).
+ * Uses MinIO JavaScript client (officially supported by Massive).
  * See https://massive.com/docs/flat-files/quickstart#setting-up-s3-access
  */
 
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import * as Minio from "minio";
 import { gunzipSync } from "node:zlib";
 import { getProviderConfigJson } from "./storage";
 import type { PcHistoryRow } from "./storage";
 
-const ENDPOINT = "https://files.polygon.io";
+const ENDPOINT = "files.massive.com";
 const BUCKET = "flatfiles";
-// Try both path formats (order varies by Polygon account; some get 403 on one path)
-const PREFIXES = ["us_options_opra/day_aggs_v1", "options/day-aggregates"];
+// Massive docs: S3 /options/day-aggregates. Also try legacy Polygon path.
+const PREFIXES = ["options/day-aggregates", "us_options_opra/day_aggs_v1"];
 
 export interface FlatFilesConfig {
   accessKeyId: string;
@@ -32,17 +33,17 @@ export function getFlatFilesConfig(): FlatFilesConfig | null {
   return null;
 }
 
-/** Parse Polygon option ticker (e.g. O:AAPL240119C00150000) to underlying and put/call. */
+/** Parse Polygon option ticker (e.g. O:AAPL240119C00150000 or AAPL240119C00150000) to underlying and put/call. */
 function parseOptionTicker(ticker: string): { underlying: string; isPut: boolean } | null {
   const t = (ticker ?? "").trim();
-  // O:UNDERLYINGYYMMDDC or P + strike...
-  const m = t.match(/^O:([A-Z]+)\d{6}([CP])/i);
+  // O:UNDERLYINGYYMMDDC/P + strike... or UNDERLYINGYYMMDDC/P...
+  const m = t.match(/^O:([A-Z]+)\d{6}([CP])/i) ?? t.match(/^([A-Z]+)\d{6}([CP])/i);
   if (!m) return null;
   return { underlying: m[1].toUpperCase(), isPut: m[2].toUpperCase() === "P" };
 }
 
-/** Parse Polygon options day-aggregates CSV: ticker, o, h, l, c, v, vw, n, t. */
-function parseDayAggregatesCsv(csv: string, fileDate: string): PcHistoryRow[] {
+/** Parse Polygon/Massive options day-aggregates CSV: ticker, o, h, l, c, v, vw, n, t. */
+export function parseDayAggregatesCsv(csv: string, fileDate: string): PcHistoryRow[] {
   const lines = csv.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
 
@@ -94,47 +95,36 @@ export async function downloadOptionsDayAggregates(date: string): Promise<{
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
   if (!match) return { ok: false, error: "Date must be YYYY-MM-DD." };
 
-  const [, year, month] = match;
   const dateStr = date.trim();
 
-  const client = new S3Client({
-    region: "us-east-1",
-    endpoint: ENDPOINT,
-    forcePathStyle: true,
-    credentials: {
-      accessKeyId: config.accessKeyId,
-      secretAccessKey: config.secretAccessKey
-    }
+  const client = new Minio.Client({
+    endPoint: ENDPOINT,
+    port: 443,
+    useSSL: true,
+    accessKey: config.accessKeyId,
+    secretKey: config.secretAccessKey
   });
 
   let lastError: string | null = null;
   for (const prefix of PREFIXES) {
     const key = `${prefix}/${match[1]}/${match[2]}/${dateStr}.csv.gz`;
     try {
-      const response = await client.send(
-        new GetObjectCommand({ Bucket: BUCKET, Key: key })
-      );
-      const body = response.Body;
-      if (!body) {
-        lastError = "Empty response from S3.";
-        continue;
-      }
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of body as AsyncIterable<Uint8Array>) {
-        chunks.push(chunk);
+      const stream = await client.getObject(BUCKET, key);
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
       const gzip = Buffer.concat(chunks);
       const csv = gunzipSync(gzip).toString("utf-8");
       const entries = parseDayAggregatesCsv(csv, dateStr);
       return { ok: true, entries };
     } catch (e: unknown) {
-      const err = e as Record<string, unknown> & { message?: string; name?: string };
-      const status = (err.$metadata as { httpStatusCode?: number })?.httpStatusCode;
-      if (status === 404) {
+      const err = e as { code?: string; message?: string };
+      if (err?.code === "NoSuchKey" || err?.message?.includes("404")) {
         lastError = null;
         continue;
       }
-      lastError = getErrorBodyDetail(err) ?? err?.message ?? String(e);
+      lastError = err?.message ?? String(e);
       break;
     }
   }
@@ -142,12 +132,14 @@ export async function downloadOptionsDayAggregates(date: string): Promise<{
   if (lastError !== null) {
     const msg = lastError.startsWith("HTTP") ? `S3: ${lastError}` : lastError;
     if (lastError === "HTTP 403" || lastError.toLowerCase().includes("forbidden")) {
+      const fromPolygon = lastError !== "HTTP 403" ? ` Polygon/S3 returned: “${lastError}”.` : "";
       return {
         ok: false,
         error:
           "S3 Forbidden: Options flat files may not be included in your plan, or this path may require a different subscription. " +
-          "Check the Polygon dashboard (Flat Files / S3) to confirm options access. " +
-          "You can still use “Import historical P/C” with a CSV file if you have P/C data from another source."
+          "Check the Polygon dashboard (Flat Files / S3) to confirm options access." +
+          fromPolygon +
+          " You can still use “Import historical P/C” with a CSV file if you have P/C data from another source."
       };
     }
     return { ok: false, error: msg };
@@ -199,25 +191,3 @@ export async function downloadOptionsDayAggregatesRange(
   return { ok: true, entries: allEntries, daysDownloaded };
 }
 
-function getErrorBodyDetail(err: Record<string, unknown>): string | null {
-  try {
-    const raw =
-      (err.$response as { body?: string | Uint8Array })?.body ??
-      (err.response as { body?: string | Uint8Array })?.body;
-    if (typeof raw === "string") {
-      const parsed = JSON.parse(raw) as { error?: string; message?: string };
-      return parsed?.error ?? parsed?.message ?? null;
-    }
-    if (raw && typeof raw === "object" && "byteLength" in raw) {
-      const str = Buffer.from(raw as Uint8Array).toString("utf-8");
-      const parsed = JSON.parse(str) as { error?: string; message?: string };
-      return parsed?.error ?? parsed?.message ?? null;
-    }
-  } catch {
-    // ignore
-  }
-  // AWS SDK v3 often puts status code in $metadata
-  const status = (err.$metadata as { httpStatusCode?: number })?.httpStatusCode;
-  if (status != null) return `HTTP ${status}`;
-  return null;
-}

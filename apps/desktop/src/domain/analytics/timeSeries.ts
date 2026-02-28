@@ -87,9 +87,9 @@ export function macdLine(
 
 /**
  * Annualized volatility (standard deviation of log returns) over a window.
- * Assumes daily data; annualizes with sqrt(252).
+ * periodsPerYear: 252 for daily, 52 for weekly.
  */
-export function volatility(closes: number[], window: number = 20): (number | null)[] {
+export function volatility(closes: number[], window: number = 20, periodsPerYear: number = 252): (number | null)[] {
   const out: (number | null)[] = [];
   for (let i = 0; i < closes.length; i++) {
     if (i < window) {
@@ -108,9 +108,70 @@ export function volatility(closes: number[], window: number = 20): (number | nul
     const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
     const variance =
       logReturns.reduce((a, r) => a + (r - mean) ** 2, 0) / (logReturns.length - 1);
-    out.push(Math.sqrt(variance * 252) * 100);
+    out.push(Math.sqrt(variance * periodsPerYear) * 100);
   }
   return out;
+}
+
+/**
+ * Resample daily OHLCV to weekly (Monday-start weeks). Each week: O=first open, H=max, L=min, C=last close, V=sum.
+ */
+export function resampleToWeekly(points: TimeSeriesPoint[]): TimeSeriesPoint[] {
+  if (points.length === 0) return [];
+  const byWeek = new Map<number, TimeSeriesPoint[]>();
+  for (const p of points) {
+    const d = new Date(p.timestamp);
+    const day = d.getUTCDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const weekStart = new Date(d);
+    weekStart.setUTCDate(d.getUTCDate() + mondayOffset);
+    weekStart.setUTCHours(0, 0, 0, 0);
+    const key = weekStart.getTime();
+    if (!byWeek.has(key)) byWeek.set(key, []);
+    byWeek.get(key)!.push(p);
+  }
+  const result: TimeSeriesPoint[] = [];
+  for (const [, bars] of byWeek.entries()) {
+    bars.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+    result.push({
+      timestamp: bars[bars.length - 1].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map((b) => b.high)),
+      low: Math.min(...bars.map((b) => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0)
+    });
+  }
+  result.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+  return result;
+}
+
+/**
+ * Resample OHLCV to monthly (first of month). Each month: O=first open, H=max, L=min, C=last close, V=sum.
+ */
+export function resampleToMonthly(points: TimeSeriesPoint[]): TimeSeriesPoint[] {
+  if (points.length === 0) return [];
+  const byMonth = new Map<string, TimeSeriesPoint[]>();
+  for (const p of points) {
+    const d = new Date(p.timestamp);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key)!.push(p);
+  }
+  const result: TimeSeriesPoint[] = [];
+  for (const [, bars] of byMonth.entries()) {
+    bars.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+    result.push({
+      timestamp: bars[bars.length - 1].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map((b) => b.high)),
+      low: Math.min(...bars.map((b) => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0)
+    });
+  }
+  result.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+  return result;
 }
 
 /**
@@ -124,13 +185,37 @@ export function drawdown(closes: number[]): number[] {
   });
 }
 
+export type ChartInterval = "15" | "60" | "120" | "240" | "D" | "W" | "1M";
+
 /**
  * Build a technical snapshot from the last available values of indicators.
  * Scores are normalized roughly: trend -1 to 1, momentum 0–100 (RSI-like), vol as annualized %.
+ * @param interval Chart interval. D/W/1M resample from daily; 15/60/120/240 use raw bars.
  */
-export function technicalSnapshot(points: TimeSeriesPoint[]): TechnicalSnapshot {
-  const closes = points.map((p) => p.close);
-  if (closes.length < 30) {
+export function technicalSnapshot(points: TimeSeriesPoint[], interval: ChartInterval = "D"): TechnicalSnapshot {
+  let series = points;
+  if (interval === "W") series = resampleToWeekly(points);
+  else if (interval === "1M") series = resampleToMonthly(points);
+  const closes = series.map((p) => p.close);
+  const periodsPerYear: Record<ChartInterval, number> = {
+    "15": 252 * 26,
+    "60": 252 * 6.5,
+    "120": 252 * 3.25,
+    "240": 252 * 1.625,
+    D: 252,
+    W: 52,
+    "1M": 12
+  };
+  const minBars: Record<ChartInterval, number> = {
+    "15": 30,
+    "60": 30,
+    "120": 30,
+    "240": 30,
+    D: 30,
+    W: 14,
+    "1M": 12
+  };
+  if (closes.length < minBars[interval]) {
     return {
       trendScore: 0,
       momentumScore: 50,
@@ -145,7 +230,7 @@ export function technicalSnapshot(points: TimeSeriesPoint[]): TechnicalSnapshot 
   const rsiSeries = rsi(closes, period);
   const lastRsi = rsiSeries[rsiSeries.length - 1];
   const momentumScore = lastRsi != null ? lastRsi : 50;
-  const volSeries = volatility(closes, 20);
+  const volSeries = volatility(closes, 20, periodsPerYear[interval]);
   const lastVol = volSeries[volSeries.length - 1];
   const volatilityScore = lastVol != null ? lastVol : 0;
   return {

@@ -95,7 +95,156 @@ function runMigrations(database: import("better-sqlite3").Database): void {
       PRIMARY KEY (symbol, date)
     );
     CREATE INDEX IF NOT EXISTS idx_options_pc_history_symbol ON options_pc_history(symbol);
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT,
+      google_id TEXT UNIQUE,
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
   `);
+}
+
+export interface StoredUser {
+  id: string;
+  email: string;
+  passwordHash: string | null;
+  googleId: string | null;
+  role: "admin" | "user";
+  createdAt: string;
+}
+
+function randomId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+export function getUsers(): StoredUser[] {
+  const database = getDb();
+  if (!database) return [];
+  const rows = database.prepare("SELECT id, email, password_hash, google_id, role, created_at FROM users ORDER BY created_at").all() as {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    google_id: string | null;
+    role: string;
+    created_at: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    passwordHash: r.password_hash,
+    googleId: r.google_id,
+    role: r.role === "admin" ? "admin" : "user",
+    createdAt: r.created_at
+  }));
+}
+
+export function getUserById(id: string): StoredUser | null {
+  const database = getDb();
+  if (!database) return null;
+  const row = database.prepare("SELECT id, email, password_hash, google_id, role, created_at FROM users WHERE id = ?").get(id) as {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    google_id: string | null;
+    role: string;
+    created_at: string;
+  } | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    googleId: row.google_id,
+    role: row.role === "admin" ? "admin" : "user",
+    createdAt: row.created_at
+  };
+}
+
+export function getUserByEmail(email: string): StoredUser | null {
+  const database = getDb();
+  if (!database) return null;
+  const row = database.prepare("SELECT id, email, password_hash, google_id, role, created_at FROM users WHERE LOWER(email) = LOWER(?)").get(email.trim()) as {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    google_id: string | null;
+    role: string;
+    created_at: string;
+  } | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    googleId: row.google_id,
+    role: row.role === "admin" ? "admin" : "user",
+    createdAt: row.created_at
+  };
+}
+
+export function getUserByGoogleId(googleId: string): StoredUser | null {
+  const database = getDb();
+  if (!database) return null;
+  const row = database.prepare("SELECT id, email, password_hash, google_id, role, created_at FROM users WHERE google_id = ?").get(googleId) as {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    google_id: string | null;
+    role: string;
+    created_at: string;
+  } | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    googleId: row.google_id,
+    role: row.role === "admin" ? "admin" : "user",
+    createdAt: row.created_at
+  };
+}
+
+export function createUser(params: {
+  email: string;
+  passwordHash?: string;
+  googleId?: string;
+  role?: "admin" | "user";
+}): StoredUser {
+  const database = getDb();
+  if (!database) throw new Error("Database not initialized");
+  const id = randomId();
+  const email = params.email.trim().toLowerCase();
+  const role = params.role ?? (getUsers().length === 0 ? "admin" : "user");
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      "INSERT INTO users (id, email, password_hash, google_id, role, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .run(id, email, params.passwordHash ?? null, params.googleId ?? null, role, now);
+  return getUserById(id)!;
+}
+
+export function setUserPassword(userId: string, passwordHash: string): void {
+  const database = getDb();
+  if (!database) return;
+  database.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, userId);
+}
+
+export function deleteUser(id: string): void {
+  const database = getDb();
+  if (!database) return;
+  database.prepare("DELETE FROM users WHERE id = ?").run(id);
+}
+
+export function linkGoogleId(userId: string, googleId: string): void {
+  const database = getDb();
+  if (!database) return;
+  database.prepare("UPDATE users SET google_id = ? WHERE id = ?").run(googleId, userId);
 }
 
 export function cacheGet(key: string): string | null {
@@ -120,6 +269,7 @@ export function cacheDelete(key: string): void {
 }
 
 const PROVIDER_CONFIG_KEY = "provider_config";
+const AUTH_PASSWORD_KEY = "auth_password_hash";
 
 export function getProviderConfigJson(): string | null {
   return cacheGet(PROVIDER_CONFIG_KEY);
@@ -129,6 +279,14 @@ export function setProviderConfigJson(json: string): void {
   cacheSet(PROVIDER_CONFIG_KEY, json);
 }
 
+export function getAuthPasswordHash(): string | null {
+  return cacheGet(AUTH_PASSWORD_KEY);
+}
+
+export function setAuthPasswordHash(hash: string): void {
+  cacheSet(AUTH_PASSWORD_KEY, hash);
+}
+
 export interface StoredPosition {
   id: string;
   accountId: string;
@@ -136,18 +294,20 @@ export interface StoredPosition {
   quantity: number;
   positionType: string;
   averagePrice: number;
+  rawJson: string | null;
 }
 
 export function getPositions(): StoredPosition[] {
   const database = getDb();
   if (!database) return [];
-  const rows = database.prepare("SELECT id, account_id, symbol, quantity, position_type, average_price FROM positions").all() as {
+  const rows = database.prepare("SELECT id, account_id, symbol, quantity, position_type, average_price, raw_json FROM positions").all() as {
     id: string;
     account_id: string;
     symbol: string;
     quantity: number;
     position_type: string;
     average_price: number;
+    raw_json: string | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -155,8 +315,26 @@ export function getPositions(): StoredPosition[] {
     symbol: r.symbol,
     quantity: r.quantity,
     positionType: r.position_type,
-    averagePrice: r.average_price
+    averagePrice: r.average_price,
+    rawJson: r.raw_json ?? null
   }));
+}
+
+export interface StoredAccount {
+  id: string;
+  name: string;
+  broker: string;
+}
+
+export function getAccounts(): StoredAccount[] {
+  const database = getDb();
+  if (!database) return [];
+  const rows = database.prepare("SELECT id, name, broker FROM accounts").all() as {
+    id: string;
+    name: string;
+    broker: string;
+  }[];
+  return rows;
 }
 
 export function saveAccount(id: string, broker: string, name: string, currency: string, marginEnabled: boolean): void {
@@ -182,15 +360,16 @@ export function savePosition(
   assetClass: string,
   quantity: number,
   positionType: string,
-  averagePrice: number
+  averagePrice: number,
+  rawJson?: string | null
 ): void {
   const database = getDb();
   if (!database) return;
   database
     .prepare(
-      "INSERT OR REPLACE INTO positions (id, account_id, symbol, asset_class, quantity, position_type, average_price, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT OR REPLACE INTO positions (id, account_id, symbol, asset_class, quantity, position_type, average_price, raw_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
-    .run(id, accountId, symbol, assetClass, quantity, positionType, averagePrice, new Date().toISOString());
+    .run(id, accountId, symbol, assetClass, quantity, positionType, averagePrice, rawJson ?? null, new Date().toISOString());
 }
 
 // --- Options P/C history (for heatmap: real-time + flat-file import)

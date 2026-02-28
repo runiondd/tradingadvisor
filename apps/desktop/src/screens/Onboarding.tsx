@@ -17,10 +17,9 @@ export const OnboardingScreen: React.FC<OnboardingProps> = ({ onComplete }) => {
 
       {step === 0 && (
         <>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Market data (Alpha Vantage)</h2>
+          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Polygon.io (Research & Options)</h2>
           <p style={{ color: "#94a3b8", marginBottom: 8 }}>
-            Enter your Alpha Vantage API key for quotes and history. Get one at
-            alphavantage.co.
+            Enter your Polygon API key for Research (quotes & history) and Options. Get one at polygon.io.
           </p>
           <input
             type="password"
@@ -41,7 +40,7 @@ export const OnboardingScreen: React.FC<OnboardingProps> = ({ onComplete }) => {
             type="button"
             onClick={async () => {
               if (typeof window.tradingApp?.invoke === "function" && apiKey.trim()) {
-                await window.tradingApp.invoke("config:set", { config: { market: { type: "alpha-vantage", apiKey: apiKey.trim() } } });
+                await window.tradingApp.invoke("config:set", { config: { options: { type: "polygon", apiKey: apiKey.trim() } } });
               }
               setStep(1);
             }}

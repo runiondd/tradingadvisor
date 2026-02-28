@@ -3,6 +3,7 @@ export type IpcChannel =
   | "config:set"
   | "portfolio:list"
   | "portfolio:importCsv"
+  | "portfolio:selectAndImportCsv"
   | "market:quote"
   | "market:history"
   | "recommendation:get"
