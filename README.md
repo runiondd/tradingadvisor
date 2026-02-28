@@ -34,6 +34,7 @@ npm run dev
 
 - **Dev:** Vite serves the React app at http://localhost:5173; Electron opens a window loading it. Run `npm run build:electron` first if the main process changes.
 - **Production build:** `npm run build` then `NODE_ENV=production npx electron .`
+- **Distributable:** `npm run dist` creates installers in `release/` (macOS: `.dmg`, Windows: `.exe` when built on Windows). Share the DMG/EXE via Google Drive, Dropbox, or GitHub Releases.
 
 ## Tests and CI
 
